@@ -3,6 +3,9 @@ module Main where
 
 import Data.Monoid
 import Text.Read (readMaybe)
+import Control.Monad.Trans
+import Control.Monad.Trans.Reader
+import Control.Monad.Trans.State
 import System.Random
 
 data Config =
@@ -44,60 +47,66 @@ initialResults =
 
 main :: IO ()
 main = do
-  (outcome, results) <- run defaultConfig initialResults
-  case outcome of
-    Win -> putStrLn "You won!"
-    Loss -> putStrLn "You lost!"
-  print results
+  undefined <- flip runStateT initialResults $ flip runReaderT defaultConfig run
+--  case undefined of
+--    Win -> putStrLn "You won!"
+--    Loss -> putStrLn "You lost!"
+--  print results
+  pure ()
 
 data Outcome = Win | Loss
 
-run :: Config -> Results -> IO (Outcome, Results)
-run cfg res = do
-  print res
-  answer <- randomRIO (0, maxNumber cfg)
-  putStrLn $ "Guess a number inclusively between 0 and " <> show (maxNumber cfg)
-  guess :: Maybe Int <- readMaybe <$> getLine
-  res' <- case guess of
+type Game = ReaderT Config (StateT Results IO)
+
+run :: (MonadReader r m, MonadState Results m, MonadIO m) => m (Outcome, Results)
+run = do
+  cfg <- ask
+  res <- lift $ get
+  answer :: Int <- liftIO $ randomRIO (0, maxNumber cfg)
+  liftIO $ putStrLn $ "Guess a number inclusively between 0 and " <> show (maxNumber cfg)
+  guess :: Maybe Int <- readMaybe <$> liftIO getLine
+  case guess of
     Nothing -> do
-      putStrLn $ "Couldn't parse your guess as a number"
-      pure res { badInputs = badInputs res + 1 }
+      liftIO $ putStrLn $ "Couldn't parse your guess as a number"
+      modify (\res -> res { badInputs = badInputs res + 1 })
     Just num
       | answer == num ->
         if requiredCorrectGuesses cfg == correctGuesses res
           then pure res
           else do
-            putStrLn $ "Congratulations! The answer was " <> show answer
-            pure res { guesses = Correct answer : guesses res }
+            liftIO $ putStrLn $ "Congratulations! The answer was " <> show answer
+            modify $ \res -> res { guesses = Correct answer : guesses res }
       | otherwise -> do
-        putStrLn $ "Boo! You guessed " <> show num <> ", but the answer was: " <> show answer
-        pure res { guesses = Incorrect answer num : guesses res }
-  (enoughCorrect, res'') <- hasEnoughCorrectGuesses cfg res'
+        liftIO $ putStrLn $ "Boo! You guessed " <> show num <> ", but the answer was: " <> show answer
+        modify $ \res -> res { guesses = Incorrect answer num : guesses res }
+  enoughCorrect <- hasEnoughCorrectGuesses res'
   if enoughCorrect
-  then pure (Win, res'')
+  then pure Win
   else do
-    (tooManyIncorrect, res''') <- hasTooManyIncorrectGuesses cfg res''
+    tooManyIncorrect <- hasTooManyIncorrectGuesses
     if tooManyIncorrect
-    then pure (Loss, res''')
-    else run cfg res'''
+    then pure Loss
+    else run
 
-hasEnoughCorrectGuesses :: Config -> Results -> IO (Bool, Results)
-hasEnoughCorrectGuesses cfg res = do
-  putStrLn "Checking for enough correct guesses"
+hasEnoughCorrectGuesses :: (MonadReader r m, MonadIO m) => m (Outcome, Results)
+hasEnoughCorrectGuesses = do
+  cfg <- ask
+  liftIO $ putStrLn "Checking for enough correct guesses"
   let required = requiredCorrectGuesses cfg
+  res <- get
   let correct = correctGuesses res
-  pure $ ( correct == required
-         , res { correctChecksCount = correctChecksCount res + 1 }
-         )
+  modify $ \res -> res { correctChecksCount = correctChecksCount res + 1 }
+  pure $ correct == required
 
-hasTooManyIncorrectGuesses :: Config -> Results -> IO (Bool, Results)
-hasTooManyIncorrectGuesses cfg res = do
-  putStrLn "Checking for too many incorrect guesses"
+hasTooManyIncorrectGuesses :: Game Bool
+hasTooManyIncorrectGuesses = do
+  cfg <- ask
+  liftIO $ putStrLn "Checking for too many incorrect guesses"
   let maxIncorrect = maxIncorrectGuesses cfg
+  res <- get
   let incorrect = incorrectGuesses res
-  pure $ ( incorrect >= maxIncorrect
-         , res { incorrectChecksCount = incorrectChecksCount res + 1 }
-         )
+  modify $ \res -> res { incorrectChecksCount = incorrectChecksCount res + 1 }
+  pure $ incorrect >= maxIncorrect
 
 correctGuesses :: Results -> Int
 correctGuesses = length . filter isCorrect . guesses
